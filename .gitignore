@@ -1,0 +1,18 @@
+# 含明文 API 密钥的配置文件，绝不入库
+config.yaml
+
+# 运行时产物
+bin/
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+*.exe
+.DS_Store
+
+# Go 临时构建目录
+.gotmp/

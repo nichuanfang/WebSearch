@@ -1,0 +1,46 @@
+# WebSearch MCP 配置示例
+#
+# 复制为 config.yaml 后填入密钥，或改用环境变量注入（推荐）。
+# 密钥解析顺序：环境变量 api_key_env > 配置文件 api_key。
+
+server:
+  # 相对于本配置文件所在目录解析
+  db_path: ./data/websearch.db
+  request_timeout: 20s
+  # debug | info | warn | error
+  log_level: info
+
+providers:
+  exa:
+    enabled: true
+    api_key_env: EXA_API_KEY
+    api_key: ""
+    # 硬上限（请求数）。Exa 用 type=lite 时 $10 免费额度约可支撑 2500 次。
+    monthly_limit: 1000
+    # 免费额度上限（美元），与请求数上限同时生效取最严。
+    monthly_limit_usd: 10.0
+    # 每月 1 号归零，余额不累积。
+    period_model: calendar_month
+
+  brave:
+    enabled: true
+    api_key_env: BRAVE_API_KEY
+    api_key: ""
+    # Brave 服务端月度请求数不限量（x-ratelimit-limit 第二值为 0），
+    # 实际约束是 $5 预付信用（≈1000 次），本地闸门是唯一防线。
+    monthly_limit: 1000
+    period_model: rolling_31d
+
+  tavily:
+    enabled: true
+    api_key_env: TAVILY_API_KEY
+    api_key: ""
+    monthly_limit: 1000
+    # 按账号开通日的账单周期滚动，官方未公开开通日，用首次使用日近似。
+    period_model: rolling_1m
+
+routing:
+  # round_robin
+  strategy: round_robin
+  # 单次搜索最多尝试的平台数
+  max_attempts: 3
