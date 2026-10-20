@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/WebSearch/internal/config"
+	"github.com/nichuanfang/WebSearch/internal/fetch"
 	"github.com/nichuanfang/WebSearch/internal/logging"
 	"github.com/nichuanfang/WebSearch/internal/mcp"
 	"github.com/nichuanfang/WebSearch/internal/provider"
@@ -132,7 +133,9 @@ func serve(ctx context.Context, cfg *config.Config, configPath string, log *slog
 	_ = qm
 
 	svc := search.New(r, log, cfg.Routing.MaxAttempts)
-	srv := mcp.NewServer(svc, log)
+	// 抓取使用独立的 HTTP 客户端，不与搜索平台共享连接池。
+	fetcher := fetch.New(&http.Client{Timeout: cfg.Server.RequestTimeout}, fetch.DefaultMaxChars)
+	srv := mcp.NewServer(svc, fetcher, log)
 	return mcp.Serve(ctx, srv, log)
 }
 

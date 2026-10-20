@@ -1,18 +1,14 @@
-feat: 多平台 AI 搜索网关 MCP 服务器
+feat: 新增 web_fetch 工具，纯本地抓取网页正文
 
-在 Exa / Brave / Tavily 三家 AI 搜索平台间实现 round-robin 负载均衡，
-配合精确额度记账、硬上限防超限、熔断与优雅降级。
+搜索只能拿到结果摘要，要读原文还得有抓取能力。本次新增 web_fetch：
 
-核心能力：
-- 轮询负载均衡：单次查询只打一个平台，三家免费额度均匀消耗
-- 硬上限防超限：调用前在 SQLite 事务内预扣额度，并发下也不超额
-- 精确记账：Exa 按 costDollars 逐次累加，Tavily 按 credit 计
-- 熔断降级：额度耗尽/限速/鉴权失败分别处理，单次最多尝试 3 个平台
-- 三种独立周期模型：Exa 自然月、Brave 滚动 31 天、Tavily 账单周期
+- 纯本地实现，仅依赖 x/net/html，不引入无头浏览器，产物仍是单一二进制
+- 零额度消耗，与 Exa/Brave/Tavily 的搜索额度完全隔离
+- 保留标题层级与段落结构，剔除导航/脚本/页脚等噪音，输出 Markdown 风格正文
+- 支持 max_chars 截断，返回 truncated 标记
+- 跟随重定向，返回最终 URL
+- 能力边界诚实：仅支持服务端渲染的正文，JS 渲染与强反爬站点明确报错而非静默返回空
 
-对外只暴露一个 web_search 工具，入参仅 query 与 num_results，
-不提供指定平台的参数，避免额度被集中消耗。
-
-技术栈：Go 1.27 + modelcontextprotocol/go-sdk + modernc.org/sqlite
+工具描述与 schema 已按 MCP 规范暴露，入参仅 url 与 max_chars。
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

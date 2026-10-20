@@ -13,6 +13,7 @@
 - **精确记账**：Exa 按响应体的 `costDollars` 逐次累加实际花费；Tavily 按 credit 计（advanced 为 2）。
 - **熔断与降级**：额度耗尽标记 `exhausted`，限速进入冷却，鉴权失败停止重试；单次查询最多尝试 3 个平台。
 - **优雅降级**：某个平台挂了自动切到下一个，全部不可用时返回结构化错误说明，便于模型自我纠正。
+- **网页正文抓取**：`web_fetch` 纯本地抓取网页并转成 Markdown，零额度消耗，不引入无头浏览器。
 
 ## 安装
 
@@ -126,6 +127,22 @@ args = ["serve", "--config", 'C:\path\to\WebSearch\config.yaml']
 工具不暴露平台、主题、深度等参数：每次查询由 round-robin 游标在 Exa / Brave /
 Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降级到下一个。
 
+### `web_fetch`
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `url` | string | 要抓取的网页 URL，必须是 http 或 https 开头（必填） |
+| `max_chars` | int | 返回正文的字符上限，1-200000，默认 20000 |
+
+抓取网页并返回 Markdown 风格的正文，附带 `title`、`url`、`truncated`。
+
+**零额度消耗** —— 抓取不占用 Exa / Brave / Tavily 的搜索额度，两者完全隔离。
+纯本地实现，不引入无头浏览器，产物仍是单一二进制。
+
+**能力边界**：只支持服务端渲染的正文。依赖 JavaScript 渲染的页面（部分 SPA）、
+需要登录的页面、以及强反爬的站点（Cloudflare 挑战页等）会明确报错，不会静默返回空内容。
+遇到这类页面可改用 Tavily Extract 或 Exa Contents 这类服务端抓取方案。
+
 ## 命令行诊断
 
 ```bash
@@ -199,6 +216,7 @@ internal/provider/   三家平台适配器与归一化结果模型
 internal/quota/      周期模型与服务端真值采集
 internal/router/     负载均衡、熔断与降级链
 internal/search/     web_search 业务逻辑
+internal/fetch/      纯本地网页抓取与正文提取
 internal/mcp/        MCP 服务器与工具注册
 internal/logging/    stderr 结构化日志
 ```
@@ -209,6 +227,7 @@ internal/logging/    stderr 结构化日志
 ## License
 
 MIT
+
 
 
 

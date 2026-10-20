@@ -56,7 +56,7 @@ func newTestService(t *testing.T, body string, status int) *search.Service {
 
 func TestToolRegistered(t *testing.T) {
 	svc := newTestService(t, `{"results":[]}`, 200)
-	srv := NewServer(svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := NewServer(svc, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	ctx := context.Background()
 	session, err := srv.Connect(ctx, &mcp.StdioTransport{}, nil)
@@ -72,7 +72,7 @@ func TestToolRegistered(t *testing.T) {
 func TestToolListAndCall(t *testing.T) {
 	svc := newTestService(t,
 		`{"results":[{"title":"标题","url":"https://e.com","highlights":["摘要"]}],"costDollars":{"total":0.004}}`, 200)
-	server := NewServer(svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := NewServer(svc, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	// 用 in-process 传输连接客户端与服务端。
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -165,7 +165,7 @@ func TestToolListAndCall(t *testing.T) {
 
 func TestToolReturnsErrorResultNotCrash(t *testing.T) {
 	svc := newTestService(t, `{"error":"NO_MORE_CREDITS","tag":"NO_MORE_CREDITS"}`, 402)
-	server := NewServer(svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := NewServer(svc, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
