@@ -8,7 +8,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/nichuanfang/WebSearch/internal/fetch"
 	"github.com/nichuanfang/WebSearch/internal/provider"
 	"github.com/nichuanfang/WebSearch/internal/search"
 )
@@ -26,7 +25,7 @@ type WebSearchOutput struct {
 }
 
 // NewServer 构造注册好 web_search 工具的 MCP 服务器。
-func NewServer(svc *search.Service, fetcher *fetch.Fetcher, log *slog.Logger) *mcp.Server {
+func NewServer(svc *search.Service, fetcher pageFetcher, log *slog.Logger) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "websearch",
 		Version: "0.1.0",
