@@ -60,6 +60,16 @@ func NewManager(remote []RemoteFetcher, local *Fetcher, cooldown time.Duration, 
 // DefaultFetchCooldown 是远程抓取限流后的默认冷却时长。
 const DefaultFetchCooldown = 5 * time.Minute
 
+// RemoteNames 返回已装配的远程通道名称，按优先级排列。
+// 供诊断与测试确认实际生效的链路。
+func (m *Manager) RemoteNames() []string {
+	out := make([]string, 0, len(m.remote))
+	for _, r := range m.remote {
+		out = append(out, r.Name())
+	}
+	return out
+}
+
 // Fetch 按顺序尝试远程通道，最后回落到本地抓取。
 //
 // 远程通道返回反爬/限流错误时进入冷却；其他错误直接尝试下一个通道。
@@ -85,6 +95,10 @@ func (m *Manager) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 					"latency_ms", latency)
 				causes = append(causes, name+": "+reason)
 				continue
+			}
+			if strings.TrimSpace(res.Title) == "" {
+				// 纯 Markdown / 纯文本没有 <title>，用正文首个标题行补位。
+				res.Title = titleFromMarkdown(res.Content)
 			}
 			m.log.Info("抓取完成",
 				"provider", name,
@@ -120,14 +134,31 @@ func (m *Manager) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	return nil, &FetchError{Causes: causes}
 }
 
+// titleFromMarkdown 从 Markdown 正文的首个标题行推断标题。
+// 找不到时返回空字符串，不影响正文返回。
+func titleFromMarkdown(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			return strings.TrimSpace(strings.TrimLeft(line, "#"))
+		}
+		// 首行就是标题的情况：取前 100 字符作为标题。
+		if len([]rune(line)) > 100 {
+			return string([]rune(line)[:100])
+		}
+		return line
+	}
+	return ""
+}
+
 // remoteQualityIssue 判断远程抓取结果是否明显不可用。
 // Jina 对部分站点会直接透传原始 HTML 或拿不到标题，这类结果交给本地提取更可靠。
 func remoteQualityIssue(res *Result) string {
 	if res == nil || strings.TrimSpace(res.Content) == "" {
 		return "远程返回空正文"
-	}
-	if strings.TrimSpace(res.Title) == "" {
-		return "远程缺少标题"
 	}
 	head := res.Content
 	if len(head) > 512 {

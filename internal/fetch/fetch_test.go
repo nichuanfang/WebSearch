@@ -165,6 +165,26 @@ func TestFetchRejectsBadScheme(t *testing.T) {
 	}
 }
 
+func TestFetchAcceptsMarkdown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Write([]byte("# Streaming API responses\n\n正文内容"))
+	}))
+	defer srv.Close()
+
+	f := New(srv.Client(), 0)
+	res, err := f.Fetch(context.Background(), srv.URL+"/guide.md")
+	if err != nil {
+		t.Fatalf("Markdown 文档应可抓取: %v", err)
+	}
+	if res.Title != "Streaming API responses" {
+		t.Errorf("标题 = %q", res.Title)
+	}
+	if !strings.Contains(res.Content, "正文内容") {
+		t.Errorf("正文异常: %q", res.Content)
+	}
+}
+
 func TestFetchRejectsNonHTML(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")

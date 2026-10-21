@@ -118,8 +118,11 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 		return nil, fmt.Errorf("目标返回 HTTP %d", resp.StatusCode)
 	}
 	contentType := resp.Header.Get("Content-Type")
-	if contentType != "" && !strings.Contains(strings.ToLower(contentType), "html") &&
-		!strings.Contains(strings.ToLower(contentType), "xml") {
+	lowerType := strings.ToLower(contentType)
+	isHTML := contentType == "" || strings.Contains(lowerType, "html") || strings.Contains(lowerType, "xml")
+	// 纯文本与 Markdown 直接按正文使用，无需 HTML 解析。
+	isPlain := strings.Contains(lowerType, "text/plain") || strings.Contains(lowerType, "markdown")
+	if !isHTML && !isPlain {
 		return nil, fmt.Errorf("%w: %s", ErrNotHTML, contentType)
 	}
 
@@ -134,7 +137,12 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 		return nil, fmt.Errorf("解压响应失败: %w", err)
 	}
 
-	title, content := Extract(string(body))
+	var title, content string
+	if isPlain {
+		title, content = extractPlainText(string(body))
+	} else {
+		title, content = Extract(string(body))
+	}
 	if strings.TrimSpace(content) == "" {
 		return nil, fmt.Errorf("%w（标题: %q）", ErrEmptyContent, title)
 	}
@@ -156,6 +164,29 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 		ContentType: contentType,
 		Truncated:   truncated,
 	}, nil
+}
+
+// extractPlainText 处理 text/plain 与 Markdown：正文原样保留，
+// 标题取首个 Markdown 标题行或首行。
+func extractPlainText(doc string) (title, content string) {
+	content = strings.TrimSpace(doc)
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			title = strings.TrimSpace(strings.TrimLeft(line, "#"))
+		} else {
+			r := []rune(line)
+			if len(r) > 100 {
+				r = r[:100]
+			}
+			title = string(r)
+		}
+		break
+	}
+	return title, content
 }
 
 // skipTags 是提取正文时跳过的标签。

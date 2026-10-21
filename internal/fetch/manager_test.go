@@ -16,10 +16,12 @@ import (
 
 // fakeRemote 是可控的远程抓取替身。
 type fakeRemote struct {
-	name    string
-	content string
-	err     error
-	calls   int
+	name       string
+	title      string
+	emptyTitle bool
+	content    string
+	err        error
+	calls      int
 }
 
 func (f *fakeRemote) Name() string { return f.name }
@@ -28,7 +30,11 @@ func (f *fakeRemote) Fetch(context.Context, string) (*Result, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &Result{URL: "https://example.com", Title: "远程标题", Content: f.content}, nil
+	title := f.title
+	if title == "" && !f.emptyTitle {
+		title = "远程标题"
+	}
+	return &Result{URL: "https://example.com", Title: title, Content: f.content}, nil
 }
 
 func newManagerForTest(remote []RemoteFetcher, local *Fetcher) *Manager {
@@ -108,11 +114,23 @@ func TestManagerRejectsRawHTMLFromRemote(t *testing.T) {
 	if reason := remoteQualityIssue(remote2); reason != "远程返回原始 HTML" {
 		t.Errorf("原始 HTML 应被识别, 实际 %q", reason)
 	}
-	if reason := remoteQualityIssue(&Result{Title: "", Content: "正文"}); reason != "远程缺少标题" {
-		t.Errorf("缺少标题应被识别, 实际 %q", reason)
+	if reason := remoteQualityIssue(&Result{Title: "", Content: "正文"}); reason != "" {
+		t.Errorf("缺少标题不应被拒绝, 实际 %q", reason)
 	}
 	if reason := remoteQualityIssue(&Result{Title: "T", Content: "# 正文\n内容"}); reason != "" {
 		t.Errorf("正常结果不应被拒绝, 实际 %q", reason)
+	}
+}
+
+func TestManagerFillsTitleFromMarkdown(t *testing.T) {
+	remote := &fakeRemote{name: "tinyfish", emptyTitle: true, content: "# Streaming API responses\n\n正文内容"}
+	m := newManagerForTest([]RemoteFetcher{remote}, nil)
+	res, err := m.Fetch(context.Background(), "https://example.com/a.md")
+	if err != nil {
+		t.Fatalf("抓取失败: %v", err)
+	}
+	if res.Title != "Streaming API responses" {
+		t.Errorf("应从首个标题行补位, 实际 %q", res.Title)
 	}
 }
 
