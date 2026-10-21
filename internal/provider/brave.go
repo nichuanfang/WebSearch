@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nichuanfang/WebSearch/internal/textcut"
 )
 
 // Brave 是 Brave Search 适配器。
@@ -88,9 +90,9 @@ func (b *Brave) Search(ctx context.Context, q Query) (*Response, error) {
 	results := make([]Result, 0, len(parsed.Web.Results))
 	for _, r := range parsed.Web.Results {
 		results = append(results, Result{
-			Title:   r.Title,
+			Title:   textcut.Truncate(r.Title, maxResultFieldChars),
 			URL:     r.URL,
-			Snippet: r.Description,
+			Snippet: textcut.Truncate(textcut.Collapse(r.Description), maxSnippetChars),
 			Date:    r.Age,
 		})
 	}

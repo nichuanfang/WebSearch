@@ -21,6 +21,8 @@ import (
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
+
+	"github.com/nichuanfang/WebSearch/internal/textcut"
 )
 
 // 默认限制。
@@ -143,7 +145,8 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	}
 	truncated := false
 	if len(content) > limit {
-		content = content[:limit]
+		// 按字节截断会切断多字节字符，统一走 UTF-8 安全的截断。
+		content = textcut.Truncate(content, limit)
 		truncated = true
 	}
 	return &Result{

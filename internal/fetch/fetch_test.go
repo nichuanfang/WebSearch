@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const sampleHTML = `<!DOCTYPE html>
@@ -127,6 +128,29 @@ func TestFetchTruncates(t *testing.T) {
 	}
 	if !res.Truncated {
 		t.Error("被截断时应标记 Truncated")
+	}
+}
+
+func TestFetchTruncateKeepsUTF8(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head><title>中文标题</title></head><body><p>这是一段中文正文内容</p></body></html>`))
+	}))
+	defer srv.Close()
+
+	// 逐字节上限都必须是合法 UTF-8，不能出现半个汉字。
+	for limit := 1; limit <= 24; limit++ {
+		f := New(srv.Client(), limit)
+		res, err := f.Fetch(context.Background(), srv.URL)
+		if err != nil {
+			t.Fatalf("limit=%d 抓取失败: %v", limit, err)
+		}
+		if !utf8.ValidString(res.Content) {
+			t.Errorf("limit=%d 产生非法 UTF-8: %q", limit, res.Content)
+		}
+		if len(res.Content) > limit {
+			t.Errorf("limit=%d 内容超限: len=%d", limit, len(res.Content))
+		}
 	}
 }
 

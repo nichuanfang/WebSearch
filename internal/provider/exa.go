@@ -14,6 +14,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/nichuanfang/WebSearch/internal/textcut"
 )
 
 // exaMaxResults 是 Exa 单次请求返回条数上限，超出部分按 $1/1k 另计。
@@ -113,9 +115,9 @@ func (e *Exa) Search(ctx context.Context, q Query) (*Response, error) {
 	results := make([]Result, 0, len(parsed.Results))
 	for _, r := range parsed.Results {
 		results = append(results, Result{
-			Title:   r.Title,
+			Title:   textcut.Truncate(r.Title, maxResultFieldChars),
 			URL:     r.URL,
-			Snippet: strings.Join(r.Highlights, " … "),
+			Snippet: textcut.Truncate(textcut.Collapse(strings.Join(r.Highlights, " … ")), maxSnippetChars),
 			Date:    r.Published,
 		})
 	}

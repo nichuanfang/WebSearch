@@ -13,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/nichuanfang/WebSearch/internal/textcut"
 )
 
 // Tavily 是 Tavily Search 适配器。
@@ -98,9 +100,9 @@ func (t *Tavily) Search(ctx context.Context, q Query) (*Response, error) {
 	results := make([]Result, 0, len(parsed.Results))
 	for _, r := range parsed.Results {
 		results = append(results, Result{
-			Title:   r.Title,
+			Title:   textcut.Truncate(r.Title, maxResultFieldChars),
 			URL:     r.URL,
-			Snippet: r.Content,
+			Snippet: textcut.Truncate(textcut.Collapse(r.Content), maxSnippetChars),
 			Score:   r.Score,
 		})
 	}
