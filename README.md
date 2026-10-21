@@ -13,7 +13,8 @@
 - **精确记账**：Exa 按响应体的 `costDollars` 逐次累加实际花费；Tavily 按 credit 计（advanced 为 2）。
 - **熔断与降级**：额度耗尽标记 `exhausted`，限速进入冷却，鉴权失败停止重试；单次查询最多尝试 3 个平台。
 - **优雅降级**：某个平台挂了自动切到下一个，全部不可用时返回结构化错误说明，便于模型自我纠正。
-- **网页正文抓取**：`web_fetch` 纯本地抓取网页并转成 Markdown，零额度消耗，不引入无头浏览器。
+- **免密钥搜索**：三家全部不可用时先走 Parallel Search，再退到 Bing RSS，零 API 额度。
+- **远程抓取优先**：`web_fetch` 先用 Jina Reader 渲染（支持 JS 页面），失败时回落到本地提取。
 
 ## 安装
 
@@ -81,6 +82,37 @@ providers:
 | Brave | https://api-dashboard.search.brave.com/app/plans | $5/月，约 1000 次 |
 | Tavily | https://app.tavily.com | 1000 credits/月 |
 
+### 免密钥通道
+
+在 `config.yaml` 的 `routing` 下可配置免密钥通道：
+
+```yaml
+routing:
+  strategy: round_robin
+  max_attempts: 3
+  fallback:
+    # 未写时默认开启；设为 false 可关闭。
+    enabled: true
+    # 通道限流或反爬后的冷却时长。
+    cooldown: 10m
+    # 搜索顺序：Parallel → Bing。
+    search: [parallel, bing]
+    # 抓取顺序：Jina Reader → 本地。
+    fetch: [jina, local]
+```
+
+免密钥通道不消耗任何付费额度，也不写入 `provider_quota`；只有 Exa / Brave /
+Tavily 全部不可用时才会触发搜索链，付费平台成功返回空结果时不会补搜。
+
+| 通道 | 用途 | 说明 |
+|---|---|---|
+| Parallel | 搜索 + 抓取 | 免 key 的官方 MCP，长查询质量最好；匿名层会限流且不公布阈值 |
+| Bing | 搜索 | 最后退路；三词以上长查询会退化，仅作应急 |
+| Jina | 抓取 | 免 key，20 次/分钟，能渲染 JS 页面 |
+| local | 抓取 | 纯本地提取，无外部依赖；只支持服务端渲染页面 |
+
+任一通道返回 429 或反爬挑战时进入 `cooldown` 冷却，期间自动跳过并继续下一个通道。
+
 ## 在 Codex 中配置
 
 编辑 `C:\Users\<你的用户名>\.codex\config.toml`，加入：
@@ -127,6 +159,22 @@ args = ["serve", "--config", 'C:\path\to\WebSearch\config.yaml']
 工具不暴露平台、主题、深度等参数：每次查询由 round-robin 游标在 Exa / Brave /
 Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降级到下一个。
 
+三家全部不可用（额度耗尽、鉴权失败或网络故障）时，按 `search` 顺序改走免密钥
+通道：先请求 Parallel Search MCP，失败或限流时再退到 Bing RSS（CJK 查询用
+`cn.bing.com`，其余用 `www.bing.com`）。结果与付费平台共用同一套
+`count` / `results` 出参，不额外暴露来源字段。
+
+**能力边界**：Parallel 匿名层没有 SLA，也不公布限流阈值，实测高峰期会返回 429
+且不带 `Retry-After`；Bing 兜底则是公开结果页，同样可能限流或出现反爬挑战。
+两者都会进入冷却（可通过 `routing.fallback.cooldown` 调整），全部不可用时返回
+统一错误，并保留各付费平台与免密钥通道的失败原因。
+
+实测补充：Bing 对无状态自动化请求存在**查询词降级**。两个词以内的查询
+（如 `飞书多维表格`、`Go 泛型`）结果稳定相关；三个及以上词、带修饰语的长查询
+（如 `Go 泛型 使用教程`、`中国 AI 大模型最新进展`）会退化为只搜索首个关键词，
+返回大量无关结果。中文与英文查询均如此，且 RSS 与 HTML 端点表现一致。
+因此 Bing 只作为最后退路。
+
 ### `web_fetch`
 
 | 参数 | 类型 | 说明 |
@@ -137,18 +185,20 @@ Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降�
 抓取网页并返回 Markdown 风格的正文，附带 `title`、`url`、`truncated`。
 
 **零额度消耗** —— 抓取不占用 Exa / Brave / Tavily 的搜索额度，两者完全隔离。
-纯本地实现，不引入无头浏览器，产物仍是单一二进制。
 
-**能力边界**：只支持服务端渲染的正文。依赖 JavaScript 渲染的页面（部分 SPA）、
-需要登录的页面、以及强反爬的站点（Cloudflare 挑战页等）会明确报错，不会静默返回空内容。
-遇到这类页面可改用 Tavily Extract 或 Exa Contents 这类服务端抓取方案。
+抓取按 `fetch` 顺序进行：先用 Jina Reader 远程渲染，能处理依赖 JavaScript 的
+页面；远程失败、限流或返回原始 HTML 时，自动回落到本地提取。远程通道触发 429
+后进入 5 分钟冷却，期间直接使用本地通道。
+
+**能力边界**：本地提取只支持服务端渲染的正文；需要登录的页面、强反爬站点
+（Cloudflare 挑战页等）仍会明确报错，不会静默返回空内容。
 
 ## 命令行诊断
 
 ```bash
 websearch quota     # 查看各平台已用/剩余/上限/状态/重置时刻
 websearch config    # 查看生效配置，密钥脱敏
-websearch doctor   # 对三平台做连通性自检
+websearch doctor   # 对三平台与免密钥通道做连通性自检
 ```
 
 `quota` 输出的「真值」列标注剩余量的推导依据：
@@ -216,7 +266,7 @@ internal/provider/   三家平台适配器与归一化结果模型
 internal/quota/      周期模型与服务端真值采集
 internal/router/     负载均衡、熔断与降级链
 internal/search/     web_search 业务逻辑
-internal/fetch/      纯本地网页抓取与正文提取
+internal/fetch/      网页抓取链（远程渲染 + 本地正文提取）
 internal/mcp/        MCP 服务器与工具注册
 internal/logging/    stderr 结构化日志
 ```
