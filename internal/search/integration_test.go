@@ -346,6 +346,10 @@ func TestFallbackFailureReturnsUnifiedErrorWithReasons(t *testing.T) {
 	if !strings.Contains(msg, "所有搜索平台都不可用") {
 		t.Errorf("错误文案 = %q, 应说明所有平台不可用", msg)
 	}
+	// 回归：前缀只能出现一次，避免 "所有搜索平台都不可用 -> 所有搜索平台都不可用"。
+	if strings.Count(msg, "所有搜索平台都不可用") != 1 {
+		t.Errorf("错误文案 = %q, 前缀重复出现", msg)
+	}
 	if !strings.Contains(msg, "exa") {
 		t.Errorf("错误文案 = %q, 应保留付费平台原因", msg)
 	}

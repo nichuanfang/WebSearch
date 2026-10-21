@@ -190,7 +190,8 @@ func (s *Service) markCooldown(name string, until time.Time, err error) {
 
 // fallbackFailed 合并付费平台与各免密钥通道的失败原因，返回统一的错误文本。
 func fallbackFailed(allFailed *router.AllFailedError, reasons []string, cause error) error {
-	msg := "所有搜索平台都不可用 -> " + allFailed.Error()
+	// AllFailedError 自带「所有搜索平台都不可用」前缀，这里不要重复拼接。
+	msg := allFailed.Error()
 	if len(reasons) > 0 {
 		msg += "; " + strings.Join(reasons, "; ")
 	}
