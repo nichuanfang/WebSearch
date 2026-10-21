@@ -131,3 +131,144 @@ func TestResolveDBPathRelativeToConfig(t *testing.T) {
 		t.Errorf("数据库路径 = %q, 期望 %q", got, want)
 	}
 }
+
+func TestFallbackDefaultsEnabled(t *testing.T) {
+	cfg := Default()
+	if !cfg.Routing.Fallback.IsEnabled() {
+		t.Error("默认应启用免密钥兜底")
+	}
+	if cfg.Routing.Fallback.CooldownDuration() != DefaultFallbackCooldown {
+		t.Errorf("默认冷却 = %v, 期望 %v", cfg.Routing.Fallback.CooldownDuration(), DefaultFallbackCooldown)
+	}
+}
+
+func TestFallbackDefaultsWhenOmittedFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+routing:
+  max_attempts: 2
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if !cfg.Routing.Fallback.IsEnabled() {
+		t.Error("未写 fallback 时应默认启用")
+	}
+	if cfg.Routing.Fallback.CooldownDuration() != DefaultFallbackCooldown {
+		t.Errorf("未写 cooldown 时应使用默认值, 实际 %v", cfg.Routing.Fallback.CooldownDuration())
+	}
+}
+
+func TestFallbackExplicitDisable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+routing:
+  fallback:
+    enabled: false
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if cfg.Routing.Fallback.IsEnabled() {
+		t.Error("显式 enabled: false 应关闭兜底")
+	}
+}
+
+func TestFallbackCustomCooldown(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+routing:
+  fallback:
+    enabled: true
+    cooldown: 3m
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if got := cfg.Routing.Fallback.CooldownDuration(); got != 3*time.Minute {
+		t.Errorf("冷却 = %v, 期望 3m", got)
+	}
+}
+
+func TestFallbackRejectsNonPositiveCooldown(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+routing:
+  fallback:
+    cooldown: 0s
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("显式 0 冷却应被拒绝")
+	}
+}
+
+func TestFallbackDefaultChains(t *testing.T) {
+	cfg := Default()
+	search := cfg.Routing.Fallback.SearchChain()
+	if len(search) != 2 || search[0] != FallbackParallel || search[1] != FallbackBing {
+		t.Errorf("默认搜索链 = %v, 期望 [parallel bing]", search)
+	}
+	fetchChain := cfg.Routing.Fallback.FetchChain()
+	if len(fetchChain) != 2 || fetchChain[0] != FallbackJina || fetchChain[1] != FallbackLocal {
+		t.Errorf("默认抓取链 = %v, 期望 [jina local]", fetchChain)
+	}
+}
+
+func TestFallbackChainsFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+routing:
+  fallback:
+    search: [bing]
+    fetch: [local]
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if got := cfg.Routing.Fallback.SearchChain(); len(got) != 1 || got[0] != FallbackBing {
+		t.Errorf("搜索链 = %v, 期望 [bing]", got)
+	}
+	if got := cfg.Routing.Fallback.FetchChain(); len(got) != 1 || got[0] != FallbackLocal {
+		t.Errorf("抓取链 = %v, 期望 [local]", got)
+	}
+}
+
+func TestFallbackRejectsUnknownChannel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+routing:
+  fallback:
+    search: [unknown-engine]
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("未知搜索通道应被拒绝")
+	}
+}

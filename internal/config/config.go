@@ -55,8 +55,65 @@ type ProviderConfig struct {
 
 // RoutingConfig 是路由与降级策略配置。
 type RoutingConfig struct {
-	Strategy    string `yaml:"strategy"`
-	MaxAttempts int    `yaml:"max_attempts"`
+	Strategy    string         `yaml:"strategy"`
+	MaxAttempts int            `yaml:"max_attempts"`
+	Fallback    FallbackConfig `yaml:"fallback"`
+}
+
+// FallbackConfig 是免密钥补充通道的配置。
+type FallbackConfig struct {
+	// Enabled 为零值时按默认开启处理：只有显式写 false 才关闭。
+	Enabled *bool `yaml:"enabled"`
+	// Cooldown 是兜底遇到限速或反爬后的冷却时长。
+	Cooldown *time.Duration `yaml:"cooldown"`
+	// Search 是免密钥搜索通道的优先级顺序。
+	Search []string `yaml:"search"`
+	// Fetch 是免密钥网页抓取通道的优先级顺序。
+	Fetch []string `yaml:"fetch"`
+}
+
+// DefaultFallbackCooldown 是兜底失败的默认冷却时长。
+const DefaultFallbackCooldown = 10 * time.Minute
+
+// 免密钥通道名称。
+const (
+	// FallbackParallel 是 Parallel 免密钥搜索/抓取。
+	FallbackParallel = "parallel"
+	// FallbackBing 是 Bing RSS 免密钥搜索。
+	FallbackBing = "bing"
+	// FallbackJina 是 Jina Reader 免密钥抓取。
+	FallbackJina = "jina"
+	// FallbackLocal 是纯本地网页抓取。
+	FallbackLocal = "local"
+)
+
+// IsEnabled 返回兜底是否启用；未配置时默认启用。
+func (f FallbackConfig) IsEnabled() bool {
+	return f.Enabled == nil || *f.Enabled
+}
+
+// CooldownDuration 返回兜底冷却时长；未配置时使用默认值。
+func (f FallbackConfig) CooldownDuration() time.Duration {
+	if f.Cooldown == nil {
+		return DefaultFallbackCooldown
+	}
+	return *f.Cooldown
+}
+
+// SearchChain 返回免密钥搜索通道顺序；未配置时默认 Parallel → Bing。
+func (f FallbackConfig) SearchChain() []string {
+	if len(f.Search) == 0 {
+		return []string{FallbackParallel, FallbackBing}
+	}
+	return f.Search
+}
+
+// FetchChain 返回免密钥抓取通道顺序；未配置时默认 Jina → 本地。
+func (f FallbackConfig) FetchChain() []string {
+	if len(f.Fetch) == 0 {
+		return []string{FallbackJina, FallbackLocal}
+	}
+	return f.Fetch
 }
 
 // Default 返回带默认值的配置。
@@ -91,8 +148,18 @@ func Default() *Config {
 		Routing: RoutingConfig{
 			Strategy:    "round_robin",
 			MaxAttempts: 3,
+			Fallback: FallbackConfig{
+				Enabled:  boolPtr(true),
+				Cooldown: durationPtr(DefaultFallbackCooldown),
+				Search:   []string{FallbackParallel, FallbackBing},
+				Fetch:    []string{FallbackJina, FallbackLocal},
+			},
 		},
 	}
+}
+
+func durationPtr(d time.Duration) *time.Duration {
+	return &d
 }
 
 // Load 从 path 读取配置；path 为空时返回默认配置。
@@ -110,6 +177,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("解析配置文件 %s: %w", path, err)
 	}
 	cfg.normalize()
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("校验配置文件 %s: %w", path, err)
+	}
 	return cfg, nil
 }
 
@@ -130,6 +200,18 @@ func (c *Config) normalize() {
 	if c.Routing.Strategy == "" {
 		c.Routing.Strategy = "round_robin"
 	}
+	if c.Routing.Fallback.Enabled == nil {
+		c.Routing.Fallback.Enabled = boolPtr(true)
+	}
+	if c.Routing.Fallback.Cooldown == nil {
+		c.Routing.Fallback.Cooldown = durationPtr(DefaultFallbackCooldown)
+	}
+	if len(c.Routing.Fallback.Search) == 0 {
+		c.Routing.Fallback.Search = []string{FallbackParallel, FallbackBing}
+	}
+	if len(c.Routing.Fallback.Fetch) == 0 {
+		c.Routing.Fallback.Fetch = []string{FallbackJina, FallbackLocal}
+	}
 	for name, p := range c.Providers {
 		if p.MonthlyLimit <= 0 {
 			p.MonthlyLimit = 1000
@@ -139,6 +221,28 @@ func (c *Config) normalize() {
 		}
 		c.Providers[name] = p
 	}
+}
+
+// validate 校验显式配置的值，拒绝会让兜底行为含糊的输入。
+func (c *Config) validate() error {
+	if c.Routing.Fallback.Cooldown != nil && *c.Routing.Fallback.Cooldown <= 0 {
+		return fmt.Errorf("routing.fallback.cooldown 必须大于 0")
+	}
+	for _, name := range c.Routing.Fallback.Search {
+		if name != FallbackParallel && name != FallbackBing {
+			return fmt.Errorf("routing.fallback.search 含未知通道 %q（可选 parallel、bing）", name)
+		}
+	}
+	for _, name := range c.Routing.Fallback.Fetch {
+		if name != FallbackJina && name != FallbackLocal {
+			return fmt.Errorf("routing.fallback.fetch 含未知通道 %q（可选 jina、local）", name)
+		}
+	}
+	return nil
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func defaultPeriodModel(name string) PeriodModel {

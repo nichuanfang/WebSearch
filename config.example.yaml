@@ -44,3 +44,14 @@ routing:
   strategy: round_robin
   # 单次搜索最多尝试的平台数
   max_attempts: 3
+  # 免密钥通道：Exa / Brave / Tavily 全部不可用时依次尝试。
+  # 不消耗任何付费额度。
+  fallback:
+    # 默认开启；设为 false 可完全关闭兜底。
+    enabled: true
+    # 通道限流或反爬后的冷却时长。
+    cooldown: 10m
+    # 搜索顺序：Parallel（质量最好）→ Bing（最后退路）。
+    search: [parallel, bing]
+    # 抓取顺序：Jina Reader（支持 JS 页面）→ 本地抓取。
+    fetch: [jina, local]

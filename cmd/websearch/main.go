@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -133,10 +134,51 @@ func serve(ctx context.Context, cfg *config.Config, configPath string, log *slog
 	_ = qm
 
 	svc := search.New(r, log, cfg.Routing.MaxAttempts)
-	// 抓取使用独立的 HTTP 客户端，不与搜索平台共享连接池。
-	fetcher := fetch.New(&http.Client{Timeout: cfg.Server.RequestTimeout}, fetch.DefaultMaxChars)
-	srv := mcp.NewServer(svc, fetcher, log)
+	if cfg.Routing.Fallback.IsEnabled() {
+		for _, name := range cfg.Routing.Fallback.SearchChain() {
+			p := buildSearchFallback(name, cfg.Server.RequestTimeout)
+			if p == nil {
+				continue
+			}
+			// Bing 是最后退路：它失败后不再尝试其他通道。
+			terminal := name == config.FallbackBing
+			svc.WithFallbackOptions(p, cfg.Routing.Fallback.CooldownDuration(), terminal)
+		}
+		log.Info("免密钥搜索通道已启用",
+			"chain", cfg.Routing.Fallback.SearchChain(),
+			"cooldown", cfg.Routing.Fallback.CooldownDuration())
+	}
+	srv := mcp.NewServer(svc, buildFetcher(cfg, log), log)
 	return mcp.Serve(ctx, srv, log)
+}
+
+// buildSearchFallback 按名称构造免密钥搜索通道。
+func buildSearchFallback(name string, timeout time.Duration) provider.Provider {
+	client := &http.Client{Timeout: timeout}
+	switch name {
+	case config.FallbackParallel:
+		return provider.NewParallel(client)
+	case config.FallbackBing:
+		return provider.NewBing(client)
+	default:
+		return nil
+	}
+}
+
+// buildFetcher 按配置组装抓取链：远程通道优先，本地抓取兜底。
+func buildFetcher(cfg *config.Config, log *slog.Logger) *fetch.Manager {
+	local := fetch.New(&http.Client{Timeout: cfg.Server.RequestTimeout}, fetch.DefaultMaxChars)
+	if !cfg.Routing.Fallback.IsEnabled() {
+		return fetch.NewManager(nil, local, 0, log)
+	}
+	var remote []fetch.RemoteFetcher
+	for _, name := range cfg.Routing.Fallback.FetchChain() {
+		switch name {
+		case config.FallbackJina:
+			remote = append(remote, fetch.NewJinaReader(&http.Client{Timeout: cfg.Server.RequestTimeout * 2}))
+		}
+	}
+	return fetch.NewManager(remote, local, fetch.DefaultFetchCooldown, log)
 }
 
 // showQuota 打印各平台额度状态。
@@ -182,6 +224,12 @@ func showConfig(cfg *config.Config, configPath string) error {
 	fmt.Printf("超时:     %s\n", cfg.Server.RequestTimeout)
 	fmt.Printf("日志级别: %s\n", cfg.Server.LogLevel)
 	fmt.Printf("策略:     %s，最多尝试 %d 个平台\n", cfg.Routing.Strategy, cfg.Routing.MaxAttempts)
+	fmt.Printf("免密钥兜底: %s（冷却 %s）\n",
+		boolStr(cfg.Routing.Fallback.IsEnabled()), cfg.Routing.Fallback.CooldownDuration())
+	if cfg.Routing.Fallback.IsEnabled() {
+		fmt.Printf("  搜索链: %s\n", strings.Join(cfg.Routing.Fallback.SearchChain(), " → "))
+		fmt.Printf("  抓取链: %s\n", strings.Join(cfg.Routing.Fallback.FetchChain(), " → "))
+	}
 	fmt.Println()
 	fmt.Println("平台      启用  密钥                本地上限  周期模型")
 	fmt.Println("--------  ----  ------------------  --------  ----------------")
@@ -231,7 +279,38 @@ func doctor(ctx context.Context, cfg *config.Config, configPath string) error {
 			fmt.Printf("           本次花费: $%.4f\n", resp.CostUSD)
 		}
 	}
+	// 免密钥通道不扣额度，逐个检查以便提前发现限流或反爬问题。
+	if cfg.Routing.Fallback.IsEnabled() {
+		for _, name := range cfg.Routing.Fallback.SearchChain() {
+			p := buildSearchFallback(name, cfg.Server.RequestTimeout)
+			if p == nil {
+				continue
+			}
+			checkFallback(ctx, p, os.Stdout)
+		}
+	} else {
+		fmt.Println("  免密钥搜索通道已关闭")
+	}
 	return nil
+}
+
+// checkFallback 对免密钥通道做一次最小请求，并把结果写到 w。
+// 该检查不写额度账本，也不会影响付费平台的调用统计。
+func checkFallback(ctx context.Context, p provider.Provider, w io.Writer) {
+	start := time.Now()
+	resp, err := p.Search(ctx, provider.Query{Text: "websearch doctor check", NumResults: 1})
+	cost := time.Since(start).Milliseconds()
+	if err != nil {
+		pe := provider.AsError(err)
+		kind := "未知"
+		if pe != nil {
+			kind = string(pe.Kind)
+		}
+		fmt.Fprintf(w, "  %-8s 失败  [%s] %v (%dms)\n", p.Name(), kind, err, cost)
+		return
+	}
+	fmt.Fprintf(w, "  %-8s 正常  返回 %d 条，耗时 %dms（免密钥，不扣额度）\n",
+		p.Name(), len(resp.Results), cost)
 }
 
 func orDefault(s, def string) string {
