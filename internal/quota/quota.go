@@ -89,17 +89,43 @@ func rollingMonthPeriod(anchor, now time.Time) Period {
 		anchor = now
 	}
 	anchor = time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, now.Location())
-	months := (now.Year()-anchor.Year())*12 + int(now.Month()) - int(anchor.Month())
-	if months < 0 {
-		months = 0
+	// 不能只按月差推算：AddDate 会归一化月末日期（1/31 + 1 月 = 3/3），
+	// 导致周期跨度漂移、now 落在周期之外。这里按实际起点逐月推进，
+	// 每个周期从上一个周期的起点加一个月，保证 [start, end) 一定包含 now。
+	if !now.After(anchor) {
+		return Period{
+			Key:   anchor.Format("2006-01-02") + "#0",
+			Start: anchor,
+			End:   nextMonth(anchor, 1),
+		}
 	}
-	start := anchor.AddDate(0, months, 0)
-	end := start.AddDate(0, 1, 0)
-	return Period{
-		Key:   fmt.Sprintf("%s#%d", anchor.Format("2006-01-02"), months),
-		Start: start,
-		End:   end,
+	start := anchor
+	idx := 0
+	for {
+		end := nextMonth(start, 1)
+		if now.Before(end) {
+			return Period{
+				Key:   fmt.Sprintf("%s#%d", anchor.Format("2006-01-02"), idx),
+				Start: start,
+				End:   end,
+			}
+		}
+		start = end
+		idx++
 	}
+}
+
+// nextMonth 返回 from 之后 n 个月的起点。
+// 若目标月没有对应日期（如 1/31 → 2/31），收敛到该月最后一天，
+// 避免 AddDate 归一化到下一月。
+func nextMonth(from time.Time, n int) time.Time {
+	y, m, d := from.Date()
+	target := time.Date(y, m+time.Month(n), 1, 0, 0, 0, 0, from.Location())
+	last := time.Date(target.Year(), target.Month()+1, 0, 0, 0, 0, 0, from.Location()).Day()
+	if d > last {
+		d = last
+	}
+	return time.Date(target.Year(), target.Month(), d, 0, 0, 0, 0, from.Location())
 }
 
 // Status 是一个平台的额度状态快照。

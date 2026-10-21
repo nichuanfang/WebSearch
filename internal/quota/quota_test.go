@@ -80,6 +80,45 @@ func TestRolling1mPeriod(t *testing.T) {
 	}
 }
 
+// TestRolling1mAlwaysContainsNow 校验周期区间一定包含当前时刻。
+// 回归：过去用 AddDate(0, months, 0) 会在月末日期归一化，导致 now 落到区间外。
+func TestRolling1mAlwaysContainsNow(t *testing.T) {
+	m := &Manager{}
+	anchors := []time.Time{
+		time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 12, 15, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+	}
+	for _, anchor := range anchors {
+		for day := 0; day <= 400; day++ {
+			now := anchor.AddDate(0, 0, day)
+			p := m.PeriodFor(config.PeriodRolling1M, anchor, now)
+			if now.Before(p.Start) || !now.Before(p.End) {
+				t.Fatalf("anchor=%s now=%s 落在区间 [%s, %s) 之外",
+					anchor.Format("2006-01-02"), now.Format("2006-01-02"),
+					p.Start.Format("2006-01-02"), p.End.Format("2006-01-02"))
+			}
+		}
+	}
+}
+
+// TestRolling1mMonthEndAnchor 回归月末锚点的周期跨度。
+func TestRolling1mMonthEndAnchor(t *testing.T) {
+	m := &Manager{}
+	anchor := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 2, 27, 0, 0, 0, 0, time.UTC)
+	p := m.PeriodFor(config.PeriodRolling1M, anchor, now)
+	if !now.Before(p.End) || now.Before(p.Start) {
+		t.Fatalf("2/27 应落在首周期内, 实际 [%s, %s)",
+			p.Start.Format("2006-01-02"), p.End.Format("2006-01-02"))
+	}
+	// 1/31 锚点的首周期应止于 2/28（该月最后一天）。
+	if got := p.End.Format("2006-01-02"); got != "2026-02-28" {
+		t.Errorf("首周期结束日 = %s, 期望 2026-02-28", got)
+	}
+}
+
 func TestServerLimitZeroSkipsConvergence(t *testing.T) {
 	ctx := context.Background()
 	m, s := newTestManager(t)
