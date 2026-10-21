@@ -75,7 +75,14 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("创建数据目录 %s: %w", dir, err)
 		}
 	}
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	// busy_timeout 必须足够长：多个 websearch 进程可能共享同一个库文件，
+	// 写锁竞争时 SQLite 会返回 SQLITE_BUSY，需要在这里等待而不是直接失败。
+	dsn := "file:" + path +
+		"?_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(30000)" +
+		"&_pragma=synchronous(NORMAL)" +
+		// WAL 超过 4MB 时自动 checkpoint，避免 -wal 文件无限增长。
+		"&_pragma=wal_autocheckpoint(1000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库: %w", err)
@@ -162,14 +169,27 @@ var ErrInsufficientQuota = errors.New("额度不足")
 // Reserve 在事务中预扣 units 个 credit，确保并发下不会超额。
 // 额度不足时返回 ErrInsufficientQuota 且不产生任何写入。
 func (s *Store) Reserve(ctx context.Context, provider, periodKey string, periodStart, periodEnd time.Time, limit int, units float64) error {
-	tx, err := s.writeDB.BeginTx(ctx, nil)
+	conn, err := s.writeConn(ctx)
 	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	// 用 BEGIN IMMEDIATE 一开始就拿到写锁。普通 BEGIN 是延迟事务：
+	// 先读后写时若其他进程已持写锁，SQLite 会直接返回 SQLITE_BUSY
+	// 而不走 busy_timeout 等待，多进程场景下会表现为随机写入失败。
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return fmt.Errorf("开启预扣事务: %w", err)
 	}
-	defer tx.Rollback()
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
 
 	var used int
-	err = tx.QueryRowContext(ctx,
+	err = conn.QueryRowContext(ctx,
 		`SELECT local_used FROM provider_quota WHERE provider = ? AND period_key = ?`,
 		provider, periodKey).Scan(&used)
 	switch {
@@ -181,7 +201,7 @@ func (s *Store) Reserve(ctx context.Context, provider, periodKey string, periodS
 	if limit > 0 && float64(used)+units > float64(limit) {
 		return fmt.Errorf("%w: 已用 %d，本地上限 %d，本次需要 %.0f", ErrInsufficientQuota, used, limit, units)
 	}
-	_, err = tx.ExecContext(ctx, `
+	_, err = conn.ExecContext(ctx, `
 INSERT INTO provider_quota (provider, period_key, period_start, period_end, local_used, state)
 VALUES (?, ?, ?, ?, ?, 'ok')
 ON CONFLICT(provider, period_key) DO UPDATE SET local_used = local_used + excluded.local_used`,
@@ -189,7 +209,21 @@ ON CONFLICT(provider, period_key) DO UPDATE SET local_used = local_used + exclud
 	if err != nil {
 		return fmt.Errorf("写入预扣: %w", err)
 	}
-	return tx.Commit()
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("提交预扣: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// writeConn 取出专用的写连接。
+// 走 database/sql 的连接池可以保证每次调用都应用 PRAGMA 与 busy_timeout。
+func (s *Store) writeConn(ctx context.Context) (*sql.Conn, error) {
+	conn, err := s.writeDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("获取写连接: %w", err)
+	}
+	return conn, nil
 }
 
 // Refund 退还一次失败的预扣。
