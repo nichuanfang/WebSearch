@@ -51,7 +51,10 @@ routing:
     enabled: true
     # 通道限流或反爬后的冷却时长。
     cooldown: 10m
-    # 搜索顺序：Parallel（质量最好）→ Bing（最后退路）。
-    search: [parallel, bing]
-    # 抓取顺序：Jina Reader（支持 JS 页面）→ 本地抓取。
-    fetch: [jina, local]
+    # 搜索顺序：Parallel（质量最好）→ TinyFish（快且稳定）。
+    search: [parallel, tinyfish]
+    # 抓取顺序：TinyFish（JS 渲染）→ Jina Reader → 本地抓取。
+    fetch: [tinyfish, jina, local]
+    # TinyFish 需要密钥。环境变量优先，留空时回落到 tinyfish_api_key。
+    tinyfish_api_key_env: TINYFISH_API_KEY
+    tinyfish_api_key: ""

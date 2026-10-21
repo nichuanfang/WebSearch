@@ -70,6 +70,10 @@ type FallbackConfig struct {
 	Search []string `yaml:"search"`
 	// Fetch 是免密钥网页抓取通道的优先级顺序。
 	Fetch []string `yaml:"fetch"`
+	// TinyFishAPIKeyEnv 是 TinyFish 密钥的环境变量名。
+	TinyFishAPIKeyEnv string `yaml:"tinyfish_api_key_env"`
+	// TinyFishAPIKey 是 TinyFish 密钥的配置文件回落值。
+	TinyFishAPIKey string `yaml:"tinyfish_api_key"`
 }
 
 // DefaultFallbackCooldown 是兜底失败的默认冷却时长。
@@ -85,6 +89,8 @@ const (
 	FallbackJina = "jina"
 	// FallbackLocal 是纯本地网页抓取。
 	FallbackLocal = "local"
+	// FallbackTinyFish 是 TinyFish 搜索/抓取。
+	FallbackTinyFish = "tinyfish"
 )
 
 // IsEnabled 返回兜底是否启用；未配置时默认启用。
@@ -100,20 +106,34 @@ func (f FallbackConfig) CooldownDuration() time.Duration {
 	return *f.Cooldown
 }
 
-// SearchChain 返回免密钥搜索通道顺序；未配置时默认 Parallel → Bing。
+// SearchChain 返回免密钥搜索通道顺序；未配置时默认 Parallel → TinyFish。
 func (f FallbackConfig) SearchChain() []string {
 	if len(f.Search) == 0 {
-		return []string{FallbackParallel, FallbackBing}
+		return []string{FallbackParallel, FallbackTinyFish}
 	}
 	return f.Search
 }
 
-// FetchChain 返回免密钥抓取通道顺序；未配置时默认 Jina → 本地。
+// FetchChain 返回免密钥抓取通道顺序；未配置时默认 TinyFish → Jina → 本地。
 func (f FallbackConfig) FetchChain() []string {
 	if len(f.Fetch) == 0 {
-		return []string{FallbackJina, FallbackLocal}
+		return []string{FallbackTinyFish, FallbackJina, FallbackLocal}
 	}
 	return f.Fetch
+}
+
+// DefaultTinyFishKeyEnv 是 TinyFish 密钥默认使用的环境变量名。
+const DefaultTinyFishKeyEnv = "TINYFISH_API_KEY"
+
+// ResolveTinyFishKey 按"环境变量优先、配置文件次之"解析 TinyFish 密钥。
+func (c *Config) ResolveTinyFishKey() string {
+	f := c.Routing.Fallback
+	if f.TinyFishAPIKeyEnv != "" {
+		if v := os.Getenv(f.TinyFishAPIKeyEnv); v != "" {
+			return v
+		}
+	}
+	return f.TinyFishAPIKey
 }
 
 // Default 返回带默认值的配置。
@@ -149,10 +169,11 @@ func Default() *Config {
 			Strategy:    "round_robin",
 			MaxAttempts: 3,
 			Fallback: FallbackConfig{
-				Enabled:  boolPtr(true),
-				Cooldown: durationPtr(DefaultFallbackCooldown),
-				Search:   []string{FallbackParallel, FallbackBing},
-				Fetch:    []string{FallbackJina, FallbackLocal},
+				Enabled:           boolPtr(true),
+				Cooldown:          durationPtr(DefaultFallbackCooldown),
+				Search:            []string{FallbackParallel, FallbackTinyFish},
+				Fetch:             []string{FallbackTinyFish, FallbackJina, FallbackLocal},
+				TinyFishAPIKeyEnv: DefaultTinyFishKeyEnv,
 			},
 		},
 	}
@@ -207,10 +228,13 @@ func (c *Config) normalize() {
 		c.Routing.Fallback.Cooldown = durationPtr(DefaultFallbackCooldown)
 	}
 	if len(c.Routing.Fallback.Search) == 0 {
-		c.Routing.Fallback.Search = []string{FallbackParallel, FallbackBing}
+		c.Routing.Fallback.Search = []string{FallbackParallel, FallbackTinyFish}
 	}
 	if len(c.Routing.Fallback.Fetch) == 0 {
-		c.Routing.Fallback.Fetch = []string{FallbackJina, FallbackLocal}
+		c.Routing.Fallback.Fetch = []string{FallbackTinyFish, FallbackJina, FallbackLocal}
+	}
+	if c.Routing.Fallback.TinyFishAPIKeyEnv == "" {
+		c.Routing.Fallback.TinyFishAPIKeyEnv = DefaultTinyFishKeyEnv
 	}
 	for name, p := range c.Providers {
 		if p.MonthlyLimit <= 0 {
@@ -229,16 +253,22 @@ func (c *Config) validate() error {
 		return fmt.Errorf("routing.fallback.cooldown 必须大于 0")
 	}
 	for _, name := range c.Routing.Fallback.Search {
-		if name != FallbackParallel && name != FallbackBing {
-			return fmt.Errorf("routing.fallback.search 含未知通道 %q（可选 parallel、bing）", name)
+		if name != FallbackParallel && name != FallbackTinyFish && name != FallbackBing {
+			return fmt.Errorf("routing.fallback.search 含未知通道 %q（可选 parallel、tinyfish、bing）", name)
 		}
 	}
 	for _, name := range c.Routing.Fallback.Fetch {
-		if name != FallbackJina && name != FallbackLocal {
-			return fmt.Errorf("routing.fallback.fetch 含未知通道 %q（可选 jina、local）", name)
+		if name != FallbackTinyFish && name != FallbackJina && name != FallbackLocal {
+			return fmt.Errorf("routing.fallback.fetch 含未知通道 %q（可选 tinyfish、jina、local）", name)
 		}
 	}
 	return nil
+}
+
+// TinyFishConfigured 返回 TinyFish 密钥是否已配置。
+// 未配置时通道会在装配阶段被跳过，不阻塞其他通道。
+func (c *Config) TinyFishConfigured() bool {
+	return c.ResolveTinyFishKey() != ""
 }
 
 func boolPtr(v bool) *bool {

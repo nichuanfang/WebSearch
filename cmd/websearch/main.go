@@ -136,7 +136,12 @@ func serve(ctx context.Context, cfg *config.Config, configPath string, log *slog
 	svc := search.New(r, log, cfg.Routing.MaxAttempts)
 	if cfg.Routing.Fallback.IsEnabled() {
 		for _, name := range cfg.Routing.Fallback.SearchChain() {
-			p := buildSearchFallback(name, cfg.Server.RequestTimeout)
+			if name == config.FallbackTinyFish && !cfg.TinyFishConfigured() {
+				log.Warn("跳过 tinyfish 搜索通道：未配置密钥",
+					"env", cfg.Routing.Fallback.TinyFishAPIKeyEnv)
+				continue
+			}
+			p := buildSearchFallback(name, cfg, cfg.Server.RequestTimeout)
 			if p == nil {
 				continue
 			}
@@ -153,11 +158,13 @@ func serve(ctx context.Context, cfg *config.Config, configPath string, log *slog
 }
 
 // buildSearchFallback 按名称构造免密钥搜索通道。
-func buildSearchFallback(name string, timeout time.Duration) provider.Provider {
+func buildSearchFallback(name string, cfg *config.Config, timeout time.Duration) provider.Provider {
 	client := &http.Client{Timeout: timeout}
 	switch name {
 	case config.FallbackParallel:
 		return provider.NewParallel(client)
+	case config.FallbackTinyFish:
+		return provider.NewTinyFish(cfg.ResolveTinyFishKey(), client)
 	case config.FallbackBing:
 		return provider.NewBing(client)
 	default:
@@ -174,6 +181,14 @@ func buildFetcher(cfg *config.Config, log *slog.Logger) *fetch.Manager {
 	var remote []fetch.RemoteFetcher
 	for _, name := range cfg.Routing.Fallback.FetchChain() {
 		switch name {
+		case config.FallbackTinyFish:
+			if !cfg.TinyFishConfigured() {
+				log.Warn("跳过 tinyfish 抓取通道：未配置密钥",
+					"env", cfg.Routing.Fallback.TinyFishAPIKeyEnv)
+				continue
+			}
+			remote = append(remote, fetch.NewTinyFishFetcher(
+				cfg.ResolveTinyFishKey(), &http.Client{Timeout: cfg.Server.RequestTimeout * 2}))
 		case config.FallbackJina:
 			remote = append(remote, fetch.NewJinaReader(&http.Client{Timeout: cfg.Server.RequestTimeout * 2}))
 		}
@@ -282,7 +297,7 @@ func doctor(ctx context.Context, cfg *config.Config, configPath string) error {
 	// 免密钥通道不扣额度，逐个检查以便提前发现限流或反爬问题。
 	if cfg.Routing.Fallback.IsEnabled() {
 		for _, name := range cfg.Routing.Fallback.SearchChain() {
-			p := buildSearchFallback(name, cfg.Server.RequestTimeout)
+			p := buildSearchFallback(name, cfg, cfg.Server.RequestTimeout)
 			if p == nil {
 				continue
 			}

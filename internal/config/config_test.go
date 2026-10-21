@@ -224,12 +224,19 @@ routing:
 func TestFallbackDefaultChains(t *testing.T) {
 	cfg := Default()
 	search := cfg.Routing.Fallback.SearchChain()
-	if len(search) != 2 || search[0] != FallbackParallel || search[1] != FallbackBing {
-		t.Errorf("默认搜索链 = %v, 期望 [parallel bing]", search)
+	if len(search) != 2 || search[0] != FallbackParallel || search[1] != FallbackTinyFish {
+		t.Errorf("默认搜索链 = %v, 期望 [parallel tinyfish]", search)
 	}
 	fetchChain := cfg.Routing.Fallback.FetchChain()
-	if len(fetchChain) != 2 || fetchChain[0] != FallbackJina || fetchChain[1] != FallbackLocal {
-		t.Errorf("默认抓取链 = %v, 期望 [jina local]", fetchChain)
+	want := []string{FallbackTinyFish, FallbackJina, FallbackLocal}
+	if len(fetchChain) != len(want) {
+		t.Fatalf("默认抓取链 = %v, 期望 %v", fetchChain, want)
+	}
+	for i := range want {
+		if fetchChain[i] != want[i] {
+			t.Errorf("默认抓取链 = %v, 期望 %v", fetchChain, want)
+			break
+		}
 	}
 }
 
@@ -270,5 +277,41 @@ routing:
 	}
 	if _, err := Load(path); err == nil {
 		t.Error("未知搜索通道应被拒绝")
+	}
+}
+
+func TestTinyFishKeyFromEnvAndFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+routing:
+  fallback:
+    tinyfish_api_key_env: MY_TF_KEY
+    tinyfish_api_key: "file-key"
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if got := cfg.ResolveTinyFishKey(); got != "file-key" {
+		t.Errorf("未设环境变量时应回落到配置文件, 实际 %q", got)
+	}
+	t.Setenv("MY_TF_KEY", "env-key")
+	if got := cfg.ResolveTinyFishKey(); got != "env-key" {
+		t.Errorf("环境变量应优先, 实际 %q", got)
+	}
+}
+
+func TestTinyFishMissingKeySkipsWithoutError(t *testing.T) {
+	// 默认链包含 tinyfish；没有密钥时不应让配置加载失败。
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("默认配置不应因缺少 TinyFish 密钥而失败: %v", err)
+	}
+	if cfg.TinyFishConfigured() {
+		t.Skip("本机设置了 TINYFISH_API_KEY，跳过缺省场景")
 	}
 }
