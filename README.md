@@ -95,10 +95,13 @@ routing:
     enabled: true
     # 通道限流或反爬后的冷却时长。
     cooldown: 10m
-    # 搜索顺序：Parallel → Bing。
-    search: [parallel, bing]
-    # 抓取顺序：Jina Reader → 本地。
-    fetch: [jina, local]
+    # 搜索顺序：Parallel → TinyFish。
+    search: [parallel, tinyfish]
+    # 抓取顺序：TinyFish → Jina Reader → 本地。
+    fetch: [tinyfish, jina, local]
+    # TinyFish 需要密钥：环境变量优先，留空时回落到配置文件。
+    tinyfish_api_key_env: TINYFISH_API_KEY
+    tinyfish_api_key: ""
 ```
 
 免密钥通道不消耗任何付费额度，也不写入 `provider_quota`；只有 Exa / Brave /
@@ -107,11 +110,15 @@ Tavily 全部不可用时才会触发搜索链，付费平台成功返回空结�
 | 通道 | 用途 | 说明 |
 |---|---|---|
 | Parallel | 搜索 + 抓取 | 免 key 的官方 MCP，长查询质量最好；匿名层会限流且不公布阈值 |
-| Bing | 搜索 | 最后退路；三词以上长查询会退化，仅作应急 |
+| TinyFish | 搜索 + 抓取 | 需 key，免费 12,000 次搜索/天、1,000 URL 抓取/天；快且稳定 |
+| Bing | 搜索 | 可选最后退路；三词以上长查询会退化 |
 | Jina | 抓取 | 免 key，20 次/分钟，能渲染 JS 页面 |
 | local | 抓取 | 纯本地提取，无外部依赖；只支持服务端渲染页面 |
 
 任一通道返回 429 或反爬挑战时进入 `cooldown` 冷却，期间自动跳过并继续下一个通道。
+
+TinyFish 未配置密钥时会被自动跳过并记录 warn 日志，不影响其他通道；
+需要启用时设置 `TINYFISH_API_KEY` 环境变量或填写 `tinyfish_api_key`。
 
 ## 在 Codex 中配置
 
@@ -160,14 +167,14 @@ args = ["serve", "--config", 'C:\path\to\WebSearch\config.yaml']
 Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降级到下一个。
 
 三家全部不可用（额度耗尽、鉴权失败或网络故障）时，按 `search` 顺序改走免密钥
-通道：先请求 Parallel Search MCP，失败或限流时再退到 Bing RSS（CJK 查询用
-`cn.bing.com`，其余用 `www.bing.com`）。结果与付费平台共用同一套
-`count` / `results` 出参，不额外暴露来源字段。
+通道：先请求 Parallel Search MCP，失败或限流时再退到 TinyFish Search API。
+结果与付费平台共用同一套 `count` / `results` 出参，不额外暴露来源字段。
 
 **能力边界**：Parallel 匿名层没有 SLA，也不公布限流阈值，实测高峰期会返回 429
-且不带 `Retry-After`；Bing 兜底则是公开结果页，同样可能限流或出现反爬挑战。
-两者都会进入冷却（可通过 `routing.fallback.cooldown` 调整），全部不可用时返回
-统一错误，并保留各付费平台与免密钥通道的失败原因。
+且不带 `Retry-After`；TinyFish 需要密钥，免费额度按天计（搜索 12,000 次、
+抓取 1,000 URL），超出后需要账户余额。任一通道限流后都会进入冷却
+（可通过 `routing.fallback.cooldown` 调整），全部不可用时返回统一错误，
+并保留各付费平台与免密钥通道的失败原因。
 
 实测补充：Bing 对无状态自动化请求存在**查询词降级**。两个词以内的查询
 （如 `飞书多维表格`、`Go 泛型`）结果稳定相关；三个及以上词、带修饰语的长查询
@@ -186,9 +193,12 @@ Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降�
 
 **零额度消耗** —— 抓取不占用 Exa / Brave / Tavily 的搜索额度，两者完全隔离。
 
-抓取按 `fetch` 顺序进行：先用 Jina Reader 远程渲染，能处理依赖 JavaScript 的
-页面；远程失败、限流或返回原始 HTML 时，自动回落到本地提取。远程通道触发 429
-后进入 5 分钟冷却，期间直接使用本地通道。
+抓取按 `fetch` 顺序进行：先用 TinyFish Fetch 渲染（支持 JS 页面，返回 Markdown），
+失败或限流时切到 Jina Reader，最后回落到本地提取。远程通道触发 429
+后进入冷却，期间自动使用下一个通道。
+
+纯文本与 Markdown 文档（如 `.md`）走原样返回，不再因为「不是 HTML」而失败；
+缺少 `<title>` 时用正文首个标题行补位。
 
 **能力边界**：本地提取只支持服务端渲染的正文；需要登录的页面、强反爬站点
 （Cloudflare 挑战页等）仍会明确报错，不会静默返回空内容。
