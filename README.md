@@ -13,8 +13,9 @@
 - **精确记账**：Exa 按响应体的 `costDollars` 逐次累加实际花费；Tavily 按 credit 计（advanced 为 2）。
 - **熔断与降级**：额度耗尽标记 `exhausted`，限速进入冷却，鉴权失败停止重试；单次查询最多尝试 3 个平台。
 - **优雅降级**：某个平台挂了自动切到下一个，全部不可用时返回结构化错误说明，便于模型自我纠正。
-- **免密钥搜索**：三家全部不可用时先走 Parallel Search，再退到 Bing RSS，零 API 额度。
-- **远程抓取优先**：`web_fetch` 先用 Jina Reader 渲染（支持 JS 页面），失败时回落到本地提取。
+- **免密钥搜索链**：三家全部不可用时依次走 Parallel Search → TinyFish Search，不消耗付费额度。
+- **远程抓取优先**：`web_fetch` 依次走 TinyFish Fetch → Jina Reader → 本地提取，前两档支持 JS 渲染。
+- **多进程安全**：`BEGIN IMMEDIATE` 预扣事务，多个 websearch 实例共享同一数据库也不会丢额度记录。
 
 ## 安装
 
@@ -27,7 +28,7 @@ cd C:\path\to\WebSearch
 .\build.ps1 build     # 编译到 bin\websearch.exe
 .\build.ps1 test      # 运行测试
 .\build.ps1 all       # vet + test + build
-.\build.ps1 doctor    # 三平台连通性自检
+.\build.ps1 doctor    # 付费平台与免密钥通道连通性自检
 ```
 
 ### Windows（已装 mingw32-make）
@@ -84,7 +85,7 @@ providers:
 
 ### 免密钥通道
 
-在 `config.yaml` 的 `routing` 下可配置免密钥通道：
+在 `config.yaml` 的 `routing` 下可配置两条免密钥链：
 
 ```yaml
 routing:
@@ -111,7 +112,7 @@ Tavily 全部不可用时才会触发搜索链，付费平台成功返回空结�
 |---|---|---|
 | Parallel | 搜索 + 抓取 | 免 key 的官方 MCP，长查询质量最好；匿名层会限流且不公布阈值 |
 | TinyFish | 搜索 + 抓取 | 需 key，免费 12,000 次搜索/天、1,000 URL 抓取/天；快且稳定 |
-| Bing | 搜索 | 可选最后退路；三词以上长查询会退化 |
+| Bing | 搜索 | 不推荐接入；三词以上长查询会退化为只搜首个关键词 |
 | Jina | 抓取 | 免 key，20 次/分钟，能渲染 JS 页面 |
 | local | 抓取 | 纯本地提取，无外部依赖；只支持服务端渲染页面 |
 
@@ -119,6 +120,23 @@ Tavily 全部不可用时才会触发搜索链，付费平台成功返回空结�
 
 TinyFish 未配置密钥时会被自动跳过并记录 warn 日志，不影响其他通道；
 需要启用时设置 `TINYFISH_API_KEY` 环境变量或填写 `tinyfish_api_key`。
+它的密钥通过 `X-API-Key` 请求头传递，没有匿名模式，搜索与抓取都需要。
+
+### TinyFish 密钥与额度
+
+1. 在 https://agent.tinyfish.ai/api-keys 创建密钥（可用 Google 或邮箱登录）。
+2. 配置到环境变量或 `config.yaml`：
+
+```powershell
+$env:TINYFISH_API_KEY = "sk-tinyfish-..."
+```
+
+免费额度按天重置：搜索 12,000 次、抓取 1,000 个 URL。超出后返回
+`INSUFFICIENT_CREDITS`，本工具按限流处理，进入冷却并跳转到下一个通道。
+
+搜索链只有两档，TinyFish 是最后一环：Parallel 限流时会由 TinyFish 接手，
+两者都不用时返回统一错误。这也是不接入 Bing 的原因——实测其长查询命中率
+仅 18–22%，低于 TinyFish 的 49%，接进来只会拖低整体质量。
 
 ## 在 Codex 中配置
 
@@ -131,7 +149,8 @@ command = 'C:\path\to\WebSearch\bin\websearch.exe'
 args = ["serve", "--config", 'C:\path\to\WebSearch\config.yaml']
 ```
 
-`env_vars` 列出客户端需要透传的环境变量名。若 `config.yaml` 里已填入密钥，这三项可以省略。
+`env_vars` 列出客户端需要透传的环境变量名（含可选的 `TINYFISH_API_KEY`）。
+若 `config.yaml` 里已填入密钥，这些项可以省略。
 
 ## 在 Claude Desktop / Cursor 中配置
 
@@ -144,7 +163,8 @@ args = ["serve", "--config", 'C:\path\to\WebSearch\config.yaml']
       "env": {
         "EXA_API_KEY": "${EXA_API_KEY}",
         "BRAVE_API_KEY": "${BRAVE_API_KEY}",
-        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}",
+        "TINYFISH_API_KEY": "${TINYFISH_API_KEY}"
       }
     }
   }
@@ -160,8 +180,8 @@ args = ["serve", "--config", 'C:\path\to\WebSearch\config.yaml']
 | `query` | string | 搜索关键词（必填） |
 | `num_results` | int | 返回条数，1-20，默认 5 |
 
-返回归一化后的结果列表，每条包含 `title`、`url`、`snippet`、`score`、`date`，
-外加结果条数 `count`。
+返回归一化后的结果列表，每条包含 `title`、`url`、`snippet`、`date`，
+外加结果条数 `count`。`score` 仅在 Tavily 返回评分时存在。
 
 工具不暴露平台、主题、深度等参数：每次查询由 round-robin 游标在 Exa / Brave /
 Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降级到下一个。
@@ -171,16 +191,13 @@ Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降�
 结果与付费平台共用同一套 `count` / `results` 出参，不额外暴露来源字段。
 
 **能力边界**：Parallel 匿名层没有 SLA，也不公布限流阈值，实测高峰期会返回 429
-且不带 `Retry-After`；TinyFish 需要密钥，免费额度按天计（搜索 12,000 次、
-抓取 1,000 URL），超出后需要账户余额。任一通道限流后都会进入冷却
-（可通过 `routing.fallback.cooldown` 调整），全部不可用时返回统一错误，
+且不带 `Retry-After`；TinyFish 需要密钥，免费额度按天计。任一通道限流后都会
+进入冷却（可通过 `routing.fallback.cooldown` 调整），全部不可用时返回统一错误，
 并保留各付费平台与免密钥通道的失败原因。
 
-实测补充：Bing 对无状态自动化请求存在**查询词降级**。两个词以内的查询
-（如 `飞书多维表格`、`Go 泛型`）结果稳定相关；三个及以上词、带修饰语的长查询
-（如 `Go 泛型 使用教程`、`中国 AI 大模型最新进展`）会退化为只搜索首个关键词，
-返回大量无关结果。中文与英文查询均如此，且 RSS 与 HTML 端点表现一致。
-因此 Bing 只作为最后退路。
+实测参考（9 个中英文长短查询，命中权威域名比例）：Parallel 67–70%，
+TinyFish 49%，AnySearch 31%，Bing 18–22%。Parallel 质量最好但偶尔限流，
+TinyFish 速度更快（约 0.3s）且额度充足，两者互补。
 
 ### `web_fetch`
 
@@ -202,6 +219,9 @@ Tavily 之间轮转，三家额度均匀消耗。某个平台失败时自动降�
 
 **能力边界**：本地提取只支持服务端渲染的正文；需要登录的页面、强反爬站点
 （Cloudflare 挑战页等）仍会明确报错，不会静默返回空内容。
+
+实测参考（5 个页面）：TinyFish 全程命中，0.6–2.8s；纯本地对飞书定价这类
+JS 渲染页取不到正文，必须依赖远程通道。
 
 ## 命令行诊断
 
@@ -259,6 +279,16 @@ websearch doctor   # 对三平台与免密钥通道做连通性自检
 
 > 测试用 `-p 1` 串行执行：Windows 下并行构建测试二进制会偶发文件锁冲突。
 
+正在运行的 MCP 服务会占用 `bin\websearch.exe`。构建脚本先把新产物写到临时文件，
+再把被占用的旧文件改名归档（只保留最近 3 份），因此**构建不会因文件占用而失败**，
+但新版本要重启 Codex 后才会被加载。需要立刻替换时可强制结束本仓库的实例：
+
+```powershell
+.\build.ps1 build -StopRunning
+```
+
+> 这也会结束当前 Codex 会话的 MCP 服务，需要重启客户端恢复。
+
 ```bash
 make test    # 等价于 go test ./... -p 1
 make vet
@@ -272,11 +302,12 @@ cmd/websearch/       子命令入口
 build.ps1            Windows 原生构建脚本（无需 make）
 internal/config/     YAML 配置与环境变量覆盖
 internal/store/      SQLite 额度账本（预扣/退还事务）
-internal/provider/   三家平台适配器与归一化结果模型
+internal/provider/   平台适配器（付费三家 + parallel/tinyfish，另有 bing 备用实现）
 internal/quota/      周期模型与服务端真值采集
 internal/router/     负载均衡、熔断与降级链
 internal/search/     web_search 业务逻辑
-internal/fetch/      网页抓取链（远程渲染 + 本地正文提取）
+internal/fetch/      网页抓取链（tinyfish/jina/local）
+internal/textcut/    UTF-8 安全截断与空白压缩
 internal/mcp/        MCP 服务器与工具注册
 internal/logging/    stderr 结构化日志
 ```
